@@ -4,10 +4,11 @@ using System.Linq;
 using System.Windows.Forms;
 
 namespace LabTemplateFSM
-{
+{ 
     public partial class Form1 : Form
     {
-        enum SymKind { Upper, Lower, Hyphen, Space, Dot }
+        enum SymKind { Upper, Lower, Hyphen, Space, Dot, NewLine }
+
         sealed class Trans { public SymKind Kind; public int To; }
         sealed class State
         {
@@ -29,7 +30,7 @@ namespace LabTemplateFSM
             textBoxList.TextChanged += TextBoxList_TextChanged;
         }
 
-        // NFA build
+        // NFA build/update
         void EnsureNfaUpToDate()
         {
             string pattern = GetFirstLine();
@@ -108,21 +109,28 @@ namespace LabTemplateFSM
                         }
                 }
             }
-            nfa[curr].Accepting = true;
+
+            // Добавляем переход по NewLine в конец
+            int sEnd = NewState();
+            nfa[curr].Edges.Add(new Trans { Kind = SymKind.NewLine, To = sEnd });
+            nfa[sEnd].Accepting = true;
         }
 
         // NFA run
         struct Allowed
         {
-            public bool Upper, Lower, Hyphen, Space, Dot;
-            public bool HasAny => Upper || Lower || Hyphen || Space || Dot;
-            public int CountLiteral => (Hyphen ? 1 : 0) + (Space ? 1 : 0) + (Dot ? 1 : 0);
+            public bool Upper, Lower, Hyphen, Space, Dot, NewLine;
+            public bool HasAny => Upper || Lower || Hyphen || Space || Dot || NewLine;
+            public int CountLiteral =>
+                (Hyphen ? 1 : 0) + (Space ? 1 : 0) + (Dot ? 1 : 0) + (NewLine ? 1 : 0);
+
             public char TheOnlyLiteral()
             {
                 if (CountLiteral != 1) throw new InvalidOperationException();
                 if (Hyphen) return '-';
                 if (Space) return ' ';
-                return '.';
+                if (Dot) return '.';
+                return '\n';
             }
         }
 
@@ -156,6 +164,9 @@ namespace LabTemplateFSM
                         case SymKind.Hyphen: if (ch == '-') dest.Add(tr.To); break;
                         case SymKind.Space: if (ch == ' ') dest.Add(tr.To); break;
                         case SymKind.Dot: if (ch == '.') dest.Add(tr.To); break;
+                        case SymKind.NewLine:
+                            if (ch == '\n' || ch == '\r') dest.Add(tr.To);
+                            break;
                     }
                 }
             }
@@ -178,11 +189,12 @@ namespace LabTemplateFSM
                         case SymKind.Hyphen: a.Hyphen = true; break;
                         case SymKind.Space: a.Space = true; break;
                         case SymKind.Dot: a.Dot = true; break;
+                        case SymKind.NewLine: a.NewLine = true; break;
                     }
             return a;
         }
 
-        // Autofill
+        // Автоподстановка литералов
         void AutoFillDeterministicLiterals()
         {
             if (inAutoFill) return;
@@ -201,6 +213,7 @@ namespace LabTemplateFSM
                     if (!hasLetterChoice && allowed.CountLiteral == 1)
                     {
                         char c = allowed.TheOnlyLiteral();
+                        if (c == '\n') break;
                         textBoxList.AppendText(c.ToString());
                         lineText += c;
                         continue;
@@ -211,13 +224,25 @@ namespace LabTemplateFSM
             finally { inAutoFill = false; }
         }
 
-        // Input handling
+        // Обработка ввода
         void TextBoxList_KeyPress(object sender, KeyPressEventArgs e)
         {
-            if (e.KeyChar == (char)Keys.Return) return;
-            if (char.IsControl(e.KeyChar)) return;
+            if (char.IsControl(e.KeyChar) && e.KeyChar != (char)Keys.Return) return;
 
             GetCurrentLine(out int lineStart, out string lineText, out int caretInLine, out bool isFirstLine);
+
+            // Обработка Enter
+            if (e.KeyChar == (char)Keys.Return)
+            {
+                if (isFirstLine) return;
+                if (textBoxList.SelectionLength != 0 || caretInLine != lineText.Length)
+                {
+                    e.Handled = true; return;
+                }
+                var allowed = ComputeAllowedAt(lineText, caretInLine);
+                if (!allowed.NewLine) { e.Handled = true; return; }
+                return;
+            }
 
             if (isFirstLine)
             {
@@ -233,22 +258,22 @@ namespace LabTemplateFSM
                 return;
             }
 
-            var allowed = ComputeAllowedAt(lineText, caretInLine);
-            char c = e.KeyChar;
+            var allowed2 = ComputeAllowedAt(lineText, caretInLine);
+            char c2 = e.KeyChar;
 
-            if (char.IsLetter(c))
+            if (char.IsLetter(c2))
             {
-                if (allowed.Upper && !allowed.Lower) { e.KeyChar = char.ToUpper(c); return; }
-                if (allowed.Lower && !allowed.Upper) { e.KeyChar = char.ToLower(c); return; }
-                if (allowed.Upper && allowed.Lower) { return; }
+                if (allowed2.Upper && !allowed2.Lower) { e.KeyChar = char.ToUpper(c2); return; }
+                if (allowed2.Lower && !allowed2.Upper) { e.KeyChar = char.ToLower(c2); return; }
+                if (allowed2.Upper && allowed2.Lower) { return; }
                 e.Handled = true; return;
             }
             else
             {
                 bool ok =
-                    (c == '-' && allowed.Hyphen) ||
-                    (c == ' ' && allowed.Space) ||
-                    (c == '.' && allowed.Dot);
+                    (c2 == '-' && allowed2.Hyphen) ||
+                    (c2 == ' ' && allowed2.Space) ||
+                    (c2 == '.' && allowed2.Dot);
                 if (!ok) { e.Handled = true; return; }
             }
         }
@@ -266,7 +291,7 @@ namespace LabTemplateFSM
             if (!isFirstLine) AutoFillDeterministicLiterals();
         }
 
-        // Helpers
+        // Вспомогательный метод
         void GetCurrentLine(out int lineStart, out string lineText, out int caretInLine, out bool isFirstLine)
         {
             string all = textBoxList.Text ?? string.Empty;
@@ -293,6 +318,5 @@ namespace LabTemplateFSM
 
             isFirstLine = (lineStart == 0);
         }
-
     }
 }
